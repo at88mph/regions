@@ -13,12 +13,12 @@ from astropy import log
 
 from ..core import reg_mapping
 from ..core import Shape, ShapeList
-from .core import STCSRegionParserError, STCSRegionParserWarning
+from .core import DALIRegionParserError, DALIRegionParserWarning
 
 __all__ = [
     'read_stcs',
-    'STCSParser',
-    'STCSRegionParser',
+    'DALIParser',
+    'DALIRegionParser',
     'CoordinateParser'
 ]
 
@@ -37,7 +37,7 @@ regex_splitter = re.compile("[, ]")
 
 def read_stcs(filename, errors='strict'):
     """
-    Read a STCS region file in as a `list` of `~regions.Region` objects.
+    Read a DALI region file in as a `list` of `~regions.Region` objects.
 
     Parameters
     ----------
@@ -73,7 +73,7 @@ def read_stcs(filename, errors='strict'):
     with open(filename) as fh:
         region_string = fh.read()
 
-    parser = STCSParser(region_string, errors=errors)
+    parser = DALIParser(region_string, errors=errors)
     return parser.shapes.to_regions()
 
 
@@ -139,34 +139,34 @@ class CoordinateParser(object):
             return u.Quantity(float(string_rep), unit=unit)
 
 
-class STCSParser(object):
+class DALIParser(object):
     """
-    Parse an STCS string
+    Parse an DALI string
 
-    This class transforms a STCS string to a `~regions.io.core.ShapeList`. The
+    This class transforms a DALI string to a `~regions.io.core.ShapeList`. The
     result is stored as ``shapes`` attribute.
 
     Each line is tested for either containing a region type or a coordinate
     system. If a coordinate system is found the global coordsys state of the
     parser is modified. If a region type is found the
-    `~regions.STCSRegionParser` is invokes to transform the line into a
+    `~regions.DALIRegionParser` is invokes to transform the line into a
     `~regions.Shape` object.
 
     Parameters
     ----------
     region_string : `str`
-        STCS region string
+        DALI region string
     errors : ``warn``, ``ignore``, ``strict``, optional
       The error handling scheme to use for handling parsing errors.
-      The default is 'strict', which will raise a `~regions.STCSRegionParserError`.
-      ``warn`` will raise a `~regions.STCSRegionParserWarning`, and
+      The default is 'strict', which will raise a `~regions.DALIRegionParserError`.
+      ``warn`` will raise a `~regions.DALIRegionParserWarning`, and
       ``ignore`` will do nothing (i.e., be silent).
 
     Examples
     --------
-    >>> from regions import STCSParser
+    >>> from regions import DALIParser
     >>> reg_str = 'Circle ICRS 331.00 1091.00 0.5 # dashlist=8 3 select=1 highlite=1 dash=0 fixed=0 edit=1 move=1 delete=1 source=1 text={Circle} tag={foo} tag={foo bar} This is a Comment color=pink width=3 font="times 10 normal roman"'
-    >>> regs = STCSParser(reg_str, errors='warn').shapes.to_regions()
+    >>> regs = DALIParser(reg_str, errors='warn').shapes.to_regions()
     >>> print(regs[0])
     Region: CirclePixelRegion
     center: PixCoord(x=330.0, y=1090.0)
@@ -291,15 +291,14 @@ class STCSParser(object):
 
         # Found region specification,
         region_end = ' '.join(values[curr_index:])
-        helper = STCSRegionParser(self.global_meta, include, type_, region_type,
-                                    *crtf_line.group('region', 'parameters'))
+        helper = DALIRegionParser(region_type, frame, ref_position, flavour, region_end, line)
         self.shapes.append(helper.shape)
 
     def _raise_error(self, msg):
         if self.errors == 'warn':
-            warn(msg, STCSRegionParserWarning)
+            warn(msg, DALIRegionParserWarning)
         elif self.errors == 'strict':
-            raise STCSRegionParserError(msg)
+            raise DALIRegionParserError(msg)
 
     @staticmethod
     def parse_meta(meta_str):
@@ -348,10 +347,10 @@ class STCSParser(object):
         Extract a Shape from a region string
         """
         if self.coordsys is None:
-            raise STCSRegionParserError("No coordinate system specified and a"
+            raise DALIRegionParserError("No coordinate system specified and a"
                                        " region has been found.")
         else:
-            helper = STCSRegionParser(coordsys=self.coordsys,
+            helper = DALIRegionParser(coordsys=self.coordsys,
                                      include=include,
                                      region_type=region_type,
                                      region_end=region_end,
@@ -369,11 +368,11 @@ angle = CoordinateParser.parse_angular_length_quantity
 coordinate = CoordinateParser.parse_coordinate
 
 
-class STCSRegionParser(object):
+class DALIRegionParser(object):
     """
-    Parse a STCS region string
+    Parse a DALI region string
 
-    This will turn a line containing a STCS region into a Shape
+    This will turn a line containing a DALI region into a Shape
 
     Parameters
     ----------
@@ -402,25 +401,32 @@ class STCSRegionParser(object):
                         'image': (u.dimensionless_unscaled, u.dimensionless_unscaled),
                         'wcs': (u.dimensionless_unscaled, u.dimensionless_unscaled),
                         }
+
     for letter in string.ascii_lowercase:
         coordinate_units['wcs{0}'.format(letter)] = (u.dimensionless_unscaled, u.dimensionless_unscaled)
 
-    # STCS language specification. This defines how a certain region is read.
+    # DALI language specification. This defines how a certain region is read.
     language_spec = {'point': (coordinate, coordinate),
-                     'text': (coordinate, coordinate),
-                     'circle': (coordinate, coordinate, radius),
-                     # This is a special case to deal with n elliptical annuli
-                     'ellipse': itertools.chain((coordinate, coordinate),
-                                                itertools.cycle((radius,))),
                      'box': (coordinate, coordinate, width, height, angle),
+                     'circle': (coordinate, coordinate, radius),
                      'polygon': itertools.cycle((coordinate,)),
-                     'line': (coordinate, coordinate, coordinate, coordinate),
-                     'annulus': itertools.chain((coordinate, coordinate),
-                                                itertools.cycle((radius,))),
+                     'position': (coordinate, coordinate),
+                     'union': itertools.combinations((coordinate,coordinate)),
+                     'not': (),
+                     'intersection': ()
                      }
 
-    def __init__(self, frame, reference_position, flavour, region_end, line):
-
+    def __init__(self, region_type, frame, reference_position, flavour, region_end, line):
+        """
+        Constructor.
+        :param region_type:     The type (name) of the region.  (e.g. circle, box)
+        :param frame:     The frame value.  (e.g. icrs, galactic)
+        :param reference_position:     The reference position value.  (e.g. heliocenter, relocatable)
+        :param flavour:     The flavour value.  (e.g. cartesian2, spherical2)
+        :param region_end:     The rest of the line to parse after the above items.  This usually contains the coordinates.
+        :param line:    The entire line for reference.
+        """
+        self.region_type = region_type
         self.frame = frame
         self.reference_position = reference_position
         self.flavour = flavour
@@ -450,18 +456,11 @@ class STCSRegionParser(object):
         """
         log.debug(self)
 
-        self.parse_composite()
         self.split_line()
         self.convert_coordinates()
         self.convert_meta()
         self.make_shape()
         log.debug(self)
-
-    def parse_composite(self):
-        """
-        Determine whether the region is composite
-        """
-        self.composite = "||" in self.line
 
     def split_line(self):
         """
@@ -487,7 +486,7 @@ class STCSRegionParser(object):
         # these some other way, i.e. with regex directly, but I don't know how.
         # We need to copy in order not to burn up the iterators
         elements = [x for x in regex_splitter.split(self.coord_str) if x]
-        element_parsers = self.language_spec[self.region_type]
+        element_parsers = self.language_spec[self.frame]
         for ii, (element, element_parser) in enumerate(zip(elements,
                                                            element_parsers)):
             if element_parser is coordinate:
@@ -498,13 +497,13 @@ class STCSRegionParser(object):
             else:
                 coord_list.append(element_parser(element))
 
-        if self.region_type in ['ellipse', 'box'] and len(coord_list) % 2 == 1:
+        if self.frame in ['ellipse', 'box'] and len(coord_list) % 2 == 1:
             coord_list[-1] = CoordinateParser.parse_angular_length_quantity(elements[len(coord_list)-1])
 
         # Reset iterator for ellipse and annulus
         # Note that this cannot be done with copy.deepcopy on python2
-        if self.region_type in ['ellipse', 'annulus']:
-            self.language_spec[self.region_type] = itertools.chain(
+        if self.frame in ['ellipse', 'annulus']:
+            self.language_spec[self.frame] = itertools.chain(
                 (coordinate, coordinate), itertools.cycle((radius,)))
 
         self.coord = coord_list
@@ -513,7 +512,7 @@ class STCSRegionParser(object):
         """
         Convert meta string to dict
         """
-        meta_ = STCSParser.parse_meta(self.meta_str)
+        meta_ = DALIParser.parse_meta(self.meta_str)
         self.meta = copy.deepcopy(self.global_meta)
         self.meta.update(meta_)
         # the 'include' is not part of the metadata string;
@@ -548,7 +547,7 @@ class STCSRegionParser(object):
         self.meta.pop('coord', None)
 
         self.shape = Shape(coordsys=self.coordsys,
-                           region_type=reg_mapping['STCS'][self.region_type],
+                           region_type=reg_mapping['DALI'][self.region_type],
                            coord=self.coord,
                            meta=self.meta,
                            composite=self.composite,
